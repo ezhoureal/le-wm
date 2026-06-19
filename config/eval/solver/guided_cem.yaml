@@ -1,10 +1,21 @@
 _target_: solver.GuidedSolver
 device: "cuda"
 seed: ${seed}
-openai_model: qwen3.5-flash
-openai_api_key_env: DASHSCOPE_API_KEY
-openai_base_url: https://ws-qaz21f01ss4ma5ve.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-openai_enable_thinking: true
+model_choice: Qwen
+eval_budget: ${eval.eval_budget}
 subgoal_renderer:
   _target_: solver.PushTSubgoalRenderer
   resolution: ${eval.img_size}
+
+vlm:
+  enable_thinking: false
+  profiles:
+    OpenAI:
+      model: gpt-5.5
+      api_key_env: OPENAI_API_KEY
+      base_url: https://api.openai.com/v1
+      reasoning_effort: low
+    Qwen:
+      model: qwen3.5-flash
+      api_key_env: DASHSCOPE_API_KEY
+      base_url: https://ws-qaz21f01ss4ma5ve.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
