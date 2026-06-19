@@ -1,6 +1,7 @@
 import os
 from functools import partial
 from pathlib import Path
+from typing import Any, cast
 
 import hydra
 import lightning as pl
@@ -30,19 +31,20 @@ def lejepa_forward(self, batch, stage, cfg):
     act_emb = output["act_emb"]
 
     ctx_emb = emb[:, :ctx_len]
-    ctx_act = act_emb[:, : ctx_len]
+    ctx_act = act_emb[:, :ctx_len]
 
-    tgt_emb = emb[:, n_preds:] # label
-    pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
+    tgt_emb = emb[:, n_preds:]  # label
+    pred_emb = self.model.predict(ctx_emb, ctx_act)  # pred
 
     # LeWM loss
     output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
-    output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
-    output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
+    output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1))
+    output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=True, sync_dist=True)
     return output
+
 
 @hydra.main(version_base=None, config_path="./config/train", config_name="lewm")
 def run(cfg):
@@ -50,14 +52,20 @@ def run(cfg):
     ##       dataset       ##
     #########################
 
-    dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
+    dataset_cfg_obj = OmegaConf.to_container(cfg.data.dataset, resolve=True)
+    if not isinstance(dataset_cfg_obj, dict):
+        raise TypeError("Dataset config must resolve to a mapping.")
+    dataset_cfg = cast(dict[str, Any], dataset_cfg_obj)
     dataset_name = dataset_cfg.pop("name")
     cache_dir = os.environ.get("LOCAL_DATASET_DIR", None)
-    dataset = swm.data.load_dataset(
-        dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
-    )
-    transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
-    
+    dataset_kwargs: dict[str, Any] = {"transform": None, **dataset_cfg}
+    if cache_dir is not None:
+        dataset_kwargs["cache_dir"] = cache_dir
+    dataset = swm.data.load_dataset(dataset_name, **dataset_kwargs)
+    transforms: list[Any] = [
+        get_img_preprocessor(source="pixels", target="pixels", img_size=cfg.img_size)
+    ]
+
     with open_dict(cfg):
         for col in cfg.data.dataset.keys_to_load:
             if col.startswith("pixels"):
@@ -65,7 +73,9 @@ def run(cfg):
             normalizer = get_column_normalizer(dataset, col, col)
             transforms.append(normalizer)
 
-        cfg.model.action_encoder.input_dim = cfg.data.dataset.frameskip * dataset.get_dim("action")
+        cfg.model.action_encoder.input_dim = (
+            cfg.data.dataset.frameskip * dataset.get_dim("action")
+        )
 
     transform = spt.data.transforms.Compose(*transforms)
     dataset.transform = transform
@@ -75,9 +85,13 @@ def run(cfg):
         dataset, lengths=[cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
     )
 
-    train = torch.utils.data.DataLoader(train_set, **cfg.loader,shuffle=True, drop_last=True, generator=rnd_gen)
-    val = torch.utils.data.DataLoader(val_set, **cfg.loader, shuffle=False, drop_last=False)
-    
+    train = torch.utils.data.DataLoader(
+        train_set, **cfg.loader, shuffle=True, drop_last=True, generator=rnd_gen
+    )
+    val = torch.utils.data.DataLoader(
+        val_set, **cfg.loader, shuffle=False, drop_last=False
+    )
+
     ##############################
     ##       model / optim      ##
     ##############################
@@ -85,8 +99,8 @@ def run(cfg):
     world_model = hydra.utils.instantiate(cfg.model)
 
     optimizers = {
-        'model_opt': {
-            "modules": 'model',
+        "model_opt": {
+            "modules": "model",
             "optimizer": dict(cfg.optimizer),
             "scheduler": {"type": "LinearWarmupCosineAnnealingLR"},
             "interval": "epoch",
@@ -95,8 +109,8 @@ def run(cfg):
 
     data_module = spt.data.DataModule(train=train, val=val)
     world_model = spt.Module(
-        model = world_model,
-        sigreg = SIGReg(**cfg.loss.sigreg.kwargs),
+        model=world_model,
+        sigreg=SIGReg(**cfg.loss.sigreg.kwargs),
         forward=partial(lejepa_forward, cfg=cfg),
         optim=optimizers,
     )
@@ -106,19 +120,24 @@ def run(cfg):
     ##########################
 
     run_id = cfg.get("subdir") or ""
-    run_dir = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), run_id)
+    run_dir = Path(swm.data.utils.get_cache_dir(sub_folder="checkpoints"), run_id)
 
     logger = None
     if cfg.wandb.enabled:
         logger = WandbLogger(**cfg.wandb.config)
-        logger.log_hyperparams(OmegaConf.to_container(cfg))
+        hyperparams_obj = OmegaConf.to_container(cfg, resolve=True)
+        if not isinstance(hyperparams_obj, dict):
+            raise TypeError("Hydra config must resolve to a mapping.")
+        logger.log_hyperparams(cast(dict[str, Any], hyperparams_obj))
 
     run_dir.mkdir(parents=True, exist_ok=True)
     with open(run_dir / "config.yaml", "w") as f:
         OmegaConf.save(cfg, f)
 
     object_dump_callback = SaveCkptCallback(
-        run_name=cfg.output_model_name, cfg=cfg.model, epoch_interval=1,
+        run_name=cfg.output_model_name,
+        cfg=cfg.model,
+        epoch_interval=1,
     )
 
     trainer = pl.Trainer(

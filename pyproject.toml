@@ -16,7 +16,9 @@ dependencies = [
   "torch",
   "transformers>=4.50.0,<5",
   "stable-worldmodel[train,format]",
+  "stable-pretraining",
   "hydra-core",
+  "datasets>=5.0.0",
 ]
 
 [project.optional-dependencies]

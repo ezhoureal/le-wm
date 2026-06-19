@@ -3,9 +3,11 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 
+
 def modulate(x, shift, scale):
     """AdaLN-zero modulation"""
     return x * (1 + scale) + shift
+
 
 class SIGReg(torch.nn.Module):
     """Sketch Isotropic Gaussian Regularizer (single-GPU!)"""
@@ -33,8 +35,9 @@ class SIGReg(torch.nn.Module):
         x_t = (proj @ A).unsqueeze(-1) * self.t
         err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
         statistic = (err @ self.weights) * proj.size(-2)
-        return statistic.mean() # average over projections and time
-    
+        return statistic.mean()  # average over projections and time
+
+
 class FeedForward(nn.Module):
     """FeedForward network used in Transformers"""
 
@@ -99,8 +102,11 @@ class ConditionalBlock(nn.Module):
             nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True)
         )
 
-        nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
-        nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
+        modulation_head = self.adaLN_modulation[-1]
+        if not isinstance(modulation_head, nn.Linear):
+            raise TypeError("AdaLN modulation head must be a Linear layer.")
+        nn.init.constant_(modulation_head.weight, 0)
+        nn.init.constant_(modulation_head.bias, 0)
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
@@ -141,7 +147,7 @@ class Transformer(nn.Module):
         dim_head,
         mlp_dim,
         dropout=0.0,
-        block_class=Block,
+        block_class: type[Block] | type[ConditionalBlock] = Block,
     ):
         super().__init__()
         self.norm = nn.LayerNorm(hidden_dim)
@@ -179,12 +185,13 @@ class Transformer(nn.Module):
             c = self.cond_proj(c)
 
         for block in self.layers:
-            x = block(x) if isinstance(block, Block) else block(x, c)
+            x = block(x, c) if isinstance(block, ConditionalBlock) else block(x)
         x = self.norm(x)
 
         if hasattr(self, "output_proj"):
             x = self.output_proj(x)
         return x
+
 
 class Embedder(nn.Module):
     def __init__(
