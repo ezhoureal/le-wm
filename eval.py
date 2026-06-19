@@ -4,22 +4,29 @@ os.environ["MUJOCO_GL"] = "egl"
 
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import hydra
 import numpy as np
-import stable_pretraining as spt
+import stable_worldmodel as swm
 import torch
 from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
-import stable_worldmodel as swm
+
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
 
 def img_transform(cfg):
     transform = transforms.Compose(
         [
             transforms.ToImage(),
             transforms.ToDtype(torch.float32, scale=True),
-            transforms.Normalize(**spt.data.dataset_stats.ImageNet),
+            transforms.Normalize(
+                mean=IMAGENET_MEAN,
+                std=IMAGENET_STD,
+            ),
             transforms.Resize(size=cfg.eval.img_size),
         ]
     )
@@ -45,6 +52,7 @@ def get_dataset(cfg, dataset_name):
         cache_dir=dataset_path,
     )
     return dataset
+
 
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
@@ -82,22 +90,17 @@ def run(cfg: DictConfig):
             process[f"goal_{col}"] = process[col]
 
     # -- run evaluation
-    policy = cfg.get("policy", "random")
 
-    if policy != "random":
-        model = swm.wm.utils.load_pretrained(cfg.policy)
-        model = model.to("cuda")
-        model = model.eval()
-        model.requires_grad_(False)
-        model.interpolate_pos_encoding = True
-        config = swm.PlanConfig(**cfg.plan_config)
-        solver = hydra.utils.instantiate(cfg.solver, model=model)
-        policy = swm.policy.WorldModelPolicy(
-            solver=solver, config=config, process=process, transform=transform
-        )
-
-    else:
-        policy = swm.policy.RandomPolicy()
+    model = swm.wm.utils.load_pretrained(cfg.policy)
+    model = model.to("cuda")
+    model = model.eval()
+    model.requires_grad_(False)
+    model.interpolate_pos_encoding = True
+    config = swm.PlanConfig(**cfg.plan_config)
+    solver = hydra.utils.instantiate(cfg.solver, model=model)
+    policy = swm.policy.WorldModelPolicy(
+        solver=solver, config=config, process=process, transform=transform
+    )
 
     results_path = (
         Path(swm.data.utils.get_cache_dir(), cfg.policy).parent
@@ -127,11 +130,12 @@ def run(cfg: DictConfig):
 
     # sort increasingly to avoid issues with HDF5Dataset indexing
     random_episode_indices = np.sort(valid_indices[random_episode_indices])
+    random_episode_rows = [int(row_idx) for row_idx in random_episode_indices.tolist()]
 
     print(random_episode_indices)
 
-    eval_episodes = dataset.get_row_data(random_episode_indices)[col_name]
-    eval_start_idx = dataset.get_row_data(random_episode_indices)["step_idx"]
+    eval_episodes = dataset.get_row_data(random_episode_rows)[col_name]
+    eval_start_idx = dataset.get_row_data(random_episode_rows)["step_idx"]
 
     if len(eval_episodes) < cfg.eval.num_eval:
         raise ValueError("Not enough episodes with sufficient length for evaluation.")
@@ -140,6 +144,15 @@ def run(cfg: DictConfig):
 
     results_path.mkdir(parents=True, exist_ok=True)
 
+    eval_callables_container = OmegaConf.to_container(
+        cfg.eval.get("callables"), resolve=True
+    )
+    if eval_callables_container is not None and not isinstance(
+        eval_callables_container, list
+    ):
+        raise TypeError("cfg.eval.callables must resolve to a list or null.")
+    eval_callables = cast(list[dict[str, Any]] | None, eval_callables_container)
+
     start_time = time.time()
     metrics = world.evaluate(
         dataset=dataset,
@@ -147,11 +160,11 @@ def run(cfg: DictConfig):
         goal_offset=cfg.eval.goal_offset_steps,
         eval_budget=cfg.eval.eval_budget,
         episodes_idx=eval_episodes.tolist(),
-        callables=OmegaConf.to_container(cfg.eval.get("callables"), resolve=True),
+        callables=eval_callables,
         video=results_path,
     )
     end_time = time.time()
-    
+
     print(metrics)
 
     results_path = results_path / cfg.output.filename
