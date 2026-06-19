@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import numpy as np
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from openai.types.shared import ReasoningEffort
 
 ReasoningEffortConfig = Literal["", "none", "minimal", "low", "medium", "high", "xhigh"]
+PUSHT_STATE_SIZE = 512.0
 
 
 class BlockPoseDelta(BaseModel):
@@ -83,6 +85,7 @@ class PushTSubgoalRenderer:
 
         self.env = PushT(resolution=resolution, render_mode="rgb_array")
         self.env._setup()
+        self._subgoal_index = 0
 
     def render_subgoal(
         self, spec: SubgoalSpec, request: SubgoalRequest
@@ -90,7 +93,11 @@ class PushTSubgoalRenderer:
         subgoal_state = _pusht_subgoal_state(request.current_state, spec)
         self.env.goal_pose = request.final_goal_pose
         self.env._set_state(subgoal_state)
-        return {"goal": np.asarray(self.env.render())}
+        visual = self.env.render()
+        goal = np.asarray(visual)
+        _save_subgoal_image(goal, self._subgoal_index)
+        self._subgoal_index += 1
+        return {"goal": goal}
 
 
 class OpenAISubgoalProposer:
@@ -124,7 +131,6 @@ class OpenAISubgoalProposer:
                 {"role": "user", "content": _subgoal_chat_content(request)},
             ],
         )
-        print(f'vlm query = {messages}')
         completion_args: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -430,9 +436,9 @@ def _pusht_subgoal_state(current_state: np.ndarray, spec: SubgoalSpec) -> np.nda
     subgoal_state = current_state.copy()
     delta = spec.next_subgoal.block_pose_delta
     pusher_xy = np.asarray(spec.next_subgoal.pusher_xy, dtype=np.float64)
-    subgoal_state[:2] = np.clip(pusher_xy, 0.0, 512.0)
-    subgoal_state[2] = np.clip(subgoal_state[2] + delta.dx, 0.0, 512.0)
-    subgoal_state[3] = np.clip(subgoal_state[3] + delta.dy, 0.0, 512.0)
+    subgoal_state[:2] = np.clip(pusher_xy, 0.0, PUSHT_STATE_SIZE)
+    subgoal_state[2] = np.clip(subgoal_state[2] + delta.dx, 0.0, PUSHT_STATE_SIZE)
+    subgoal_state[3] = np.clip(subgoal_state[3] + delta.dy, 0.0, PUSHT_STATE_SIZE)
     subgoal_state[4] = (subgoal_state[4] + delta.dtheta) % (2.0 * np.pi)
     subgoal_state[-2:] = 0.0
     return subgoal_state
@@ -465,13 +471,26 @@ def _subgoal_prompt(request: SubgoalRequest) -> str:
             "Return exactly one JSON object and no other text.",
             "Use the top-level fields shown in response_json_example.",
             "Do not wrap the answer in a schema, contract, output_contract, or metadata key.",
-            "Use PushT pixel/state coordinates for pusher_xy, not normalized coordinates.",
+            "Use PushT state coordinates for pusher_xy: x and y are floats in [0, 512].",
+            "The attached images are resized to 224x224 only for display; do not output 224-scale image pixels.",
+            "PushT state coordinates and image coordinates both use origin at top-left, x right, y down.",
+            "For approach/contact phases, put pusher_xy near the requested block edge, not near the canvas edge.",
+            "A bottom-edge contact point should have y slightly larger than the block center y, about 60-100 state units away.",
         ],
         "env_index": request.env_index,
         "current_step": request.current_step,
         "steps_remaining": request.steps_remaining,
         "reachable_horizon_steps": request.horizon_steps,
         "current_state": _compact_array(request.current_state),
+        "current_state_fields": [
+            "pusher_x",
+            "pusher_y",
+            "block_center_x",
+            "block_center_y",
+            "block_theta",
+            "pusher_vx",
+            "pusher_vy",
+        ],
         "current_image": {
             "role": "current observation image",
             "shape": list(request.current_image.shape),
@@ -502,13 +521,21 @@ def _image_data_url(image: np.ndarray) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+def _save_subgoal_image(image: np.ndarray, index: int) -> None:
+    output_dir = Path.home() / ".stable_worldmodel" / "quentinll"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(_to_uint8_image(image)).save(
+        output_dir / f"subgoal_{index:03d}.png"
+    )
+
+
 def _parse_subgoal_spec(content: str) -> SubgoalSpec:
     stripped = content.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
         if len(lines) >= 3 and lines[-1].strip() == "```":
             stripped = "\n".join(lines[1:-1])
-    print(f'vlm guidance = {stripped}')
+    print(f"vlm guidance = {stripped}")
     return SubgoalSpec.model_validate_json(stripped)
 
 
