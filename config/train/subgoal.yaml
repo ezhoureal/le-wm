@@ -1,0 +1,20 @@
+defaults:
+  - lewm
+  - override /model: subgoal
+  - _self_
+
+output_model_name: subgoal_pusht
+pretrained_model: quentinll/lewm-pusht
+pretrained_cache_dir: null
+
+data:
+  dataset:
+    name: pusht_expert_train.h5
+    frameskip: 1
+    keys_to_load:
+      - pixels
+    keys_to_cache: []
+
+subgoal_steps_ahead: 25
+goal_steps_ahead: 50
+num_preds: ${eval:'max(${subgoal_steps_ahead}, ${goal_steps_ahead})'}

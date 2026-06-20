@@ -1,0 +1,45 @@
+[project]
+name = "le-wm"
+version = "0.1.0"
+description = "compact JEPA-style world model"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Lucas Maes" }, { name = "Tianer Zhou", email = "ezhoureal@gmail.com"}]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "numpy",
+  "openai>=2",
+  "pillow",
+  "pygame>=2.6.1",
+  "pymunk>=7.2.0",
+  "shapely>=2.1.2",
+  "torch",
+  "transformers>=4.50.0,<5",
+  "stable-worldmodel[train,format]",
+  "stable-pretraining",
+  "hydra-core",
+  "datasets>=5.0.0",
+]
+
+[project.optional-dependencies]
+format = [
+  "h5py",
+  "zstandard",
+]
+vision = [
+  "torchvision",
+]
+
+[dependency-groups]
+dev = [
+  "pytest",
+  "ruff",
+  "pyright",
+]
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

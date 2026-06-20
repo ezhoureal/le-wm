@@ -1,0 +1,56 @@
+_target_: planner.subgoal_planner.HierarchicalWM
+
+base_model:
+  _target_: stable_worldmodel.wm.lewm.LeWM
+  encoder:
+    _target_: stable_pretraining.backbone.utils.vit_hf
+    size: tiny
+    patch_size: 14
+    image_size: ${img_size}
+    pretrained: false
+    use_mask_token: false
+  predictor:
+    _target_: stable_worldmodel.wm.lewm.module.Predictor
+    num_frames: 3
+    input_dim: ${embed_dim}
+    hidden_dim: ${embed_dim}
+    output_dim: ${embed_dim}
+    depth: 6
+    heads: 16
+    mlp_dim: 2048
+    dim_head: 64
+    dropout: 0.1
+    emb_dropout: 0.0
+  action_encoder:
+    _target_: stable_worldmodel.wm.lewm.module.Embedder
+    input_dim: 10
+    emb_dim: ${embed_dim}
+  projector:
+    _target_: stable_worldmodel.wm.lewm.module.MLP
+    input_dim: ${embed_dim}
+    output_dim: ${embed_dim}
+    hidden_dim: 2048
+    norm_fn:
+      _target_: torch.nn.BatchNorm1d
+      _partial_: true
+  pred_proj:
+    _target_: stable_worldmodel.wm.lewm.module.MLP
+    input_dim: ${embed_dim}
+    output_dim: ${embed_dim}
+    hidden_dim: 2048
+    norm_fn:
+      _target_: torch.nn.BatchNorm1d
+      _partial_: true
+
+planner:
+  _target_: planner.subgoal_planner.SubgoalPlanner
+  num_frames: ${history_size}
+  input_dim: ${embed_dim}
+  hidden_dim: ${embed_dim}
+  output_dim: ${embed_dim}
+  depth: 4
+  heads: 8
+  dim_head: 64
+  mlp_dim: 1024
+  dropout: 0.1
+  emb_dropout: 0.0
