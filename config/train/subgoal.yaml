@@ -18,3 +18,4 @@ data:
 subgoal_steps_ahead: 25
 goal_steps_ahead: 50
 num_preds: ${eval:'max(${subgoal_steps_ahead}, ${goal_steps_ahead})'}
+seed: 3007
