@@ -10,12 +10,13 @@ pretrained_cache_dir: null
 data:
   dataset:
     name: pusht_expert_train.lance
+    num_steps: ${eval:'max(${goal_steps_ahead}) + 1'}
     frameskip: 1
     keys_to_load:
       - pixels
     keys_to_cache: []
 
-goal_steps_ahead: [25, 50]
+goal_steps_ahead: [0, 50]
 subgoal_steps_ahead: 25
 num_preds: ${eval:'max(${goal_steps_ahead})'}
 seed: 3007

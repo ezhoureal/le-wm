@@ -19,20 +19,15 @@ def model_forward(self, batch, stage, cfg):
     """Encode observations and train the subgoal predictor."""
     output = self.model.encode(batch)
     # emb shape: (B, T, D).
-    # T is concatenation of three segments (each of length history_size):
-    # [context frames, subgoal frames, goal frames]
+    # T contains [current frame, subgoal frame, goal frame].
     emb = output["emb"]
-    history_size = cfg.history_size
-    needed_frames = 3 * history_size
-    if emb.size(1) != needed_frames:
-        raise ValueError(
-            f"subgoal training needs {needed_frames} sparse frames, got {emb.size(1)}"
-        )
+    if emb.size(1) != 3:
+        raise ValueError(f"subgoal training needs 3 sparse frames, got {emb.size(1)}")
 
-    context_emb = emb[:, :history_size]
-    target_emb = emb[:, history_size : 2 * history_size]
-    goal_emb = emb[:, 2 * history_size :]
-    pred_emb = self.model(context_emb, goal_emb)
+    current_emb = emb[:, :1]
+    target_emb = emb[:, 1:2]
+    goal_emb = emb[:, 2:]
+    pred_emb = self.model(current_emb, goal_emb)
 
     output["loss"] = output["pred_loss"] = (pred_emb - target_emb).pow(2).mean()
 
@@ -58,7 +53,6 @@ def run(cfg):
     dataset = SparseLanceDataset(
         path=dataset_path,
         num_steps=cfg.data.dataset.num_steps,
-        history_size=cfg.history_size,
         goal_steps_ahead=tuple(cfg.goal_steps_ahead),
         subgoal_steps_ahead=cfg.subgoal_steps_ahead,
         keys_to_load=list(cfg.data.dataset.keys_to_load),

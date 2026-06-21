@@ -44,7 +44,6 @@ base_model:
 
 planner:
   _target_: planner.subgoal_planner.SubgoalPlanner
-  num_frames: ${history_size}
   input_dim: ${embed_dim}
   hidden_dim: ${embed_dim}
   output_dim: ${embed_dim}

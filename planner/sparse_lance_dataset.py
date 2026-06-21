@@ -13,23 +13,19 @@ class SparseLanceDataset(LanceDataset):
         self,
         path: str | Path,
         num_steps: int,
-        history_size: int,
         goal_steps_ahead: tuple[int, int],
         subgoal_steps_ahead: int,
         keys_to_load: list[str],
         transform: Callable[[dict[str, Any]], dict[str, Any]] | None,
     ) -> None:
         goal_min, goal_max = goal_steps_ahead
-        if history_size < 1:
-            raise ValueError("history size must be positive")
         if not 0 <= goal_min <= goal_max:
             raise ValueError("goal steps must be a non-negative ordered range")
         if subgoal_steps_ahead < 0:
             raise ValueError("subgoal steps must be non-negative")
-        if goal_max + history_size > num_steps:
-            raise ValueError("goal frames must fit within num_steps")
+        if goal_max >= num_steps:
+            raise ValueError("goal frame must fit within num_steps")
 
-        self.history_size = history_size
         self.goal_steps_ahead = goal_steps_ahead
         self.subgoal_steps_ahead = subgoal_steps_ahead
         super().__init__(
@@ -44,11 +40,7 @@ class SparseLanceDataset(LanceDataset):
         goal_min, goal_max = self.goal_steps_ahead
         goal_steps_ahead = int(torch.randint(goal_min, goal_max + 1, ()).item())
         subgoal_steps_ahead = min(goal_steps_ahead, self.subgoal_steps_ahead)
-        return (
-            *range(self.history_size),
-            *range(subgoal_steps_ahead, subgoal_steps_ahead + self.history_size),
-            *range(goal_steps_ahead, goal_steps_ahead + self.history_size),
-        )
+        return 0, subgoal_steps_ahead, goal_steps_ahead
 
     def _load_slice(self, ep_idx: int, start: int, end: int) -> dict[str, Any]:
         del end
@@ -78,7 +70,7 @@ class SparseLanceDataset(LanceDataset):
             gather = pa.array([row_lookup[row] for row in all_rows], type=pa.int64())
             batch = unique_batch.take(gather)
 
-        frame_count = 3 * self.history_size
+        frame_count = 3
         results: list[dict[str, Any]] = []
         for index, (ep_idx, global_start) in enumerate(sample_starts):
             sample_batch = (

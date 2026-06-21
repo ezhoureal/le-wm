@@ -14,7 +14,6 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
 
-from planner.policy import HierarchicalWMPolicy
 from planner.subgoal_planner import HierarchicalWM
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -109,8 +108,7 @@ def run(cfg: DictConfig) -> None:
     solver = hydra.utils.instantiate(
         cfg.solver, model=model.base_model, planner=model.planner
     )
-    policy = HierarchicalWMPolicy(
-        history_size=model.planner.num_frames,
+    policy = swm.policy.WorldModelPolicy(
         solver=solver,
         config=swm.PlanConfig(**cfg.plan_config),
         process=get_processors(dataset, list(cfg.dataset.keys_to_cache)),

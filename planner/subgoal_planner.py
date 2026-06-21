@@ -10,7 +10,6 @@ class SubgoalPlanner(nn.Module):
     def __init__(
         self,
         *,
-        num_frames: int,
         input_dim: int,
         hidden_dim: int,
         output_dim: int,
@@ -22,7 +21,6 @@ class SubgoalPlanner(nn.Module):
         emb_dropout: float,
     ) -> None:
         super().__init__()
-        self.num_frames = num_frames
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
@@ -33,11 +31,10 @@ class SubgoalPlanner(nn.Module):
         self.dropout = dropout
         self.emb_dropout = emb_dropout
 
-        self.pos_embedding = nn.Parameter(torch.randn(1, num_frames, input_dim))
         self.dropout_layer = nn.Dropout(emb_dropout)
         self.goal_proj = nn.Linear(input_dim, input_dim)
         self.transformer = Transformer(
-            input_dim=3 * input_dim,
+            input_dim=2 * input_dim,
             hidden_dim=hidden_dim,
             output_dim=output_dim,
             depth=depth,
@@ -48,24 +45,17 @@ class SubgoalPlanner(nn.Module):
         )
 
     def forward(
-        self, context_emb: torch.Tensor, goal_emb: torch.Tensor
+        self, current_emb: torch.Tensor, goal_emb: torch.Tensor
     ) -> torch.Tensor:
-        if goal_emb.shape != context_emb.shape:
+        if goal_emb.shape != current_emb.shape or current_emb.size(1) != 1:
             raise ValueError(
-                "goal embeddings must match context embeddings, got "
+                "current and goal embeddings must have matching shapes "
+                f"(batch, 1, embedding_dim), got {tuple(current_emb.shape)} and "
                 f"{tuple(goal_emb.shape)}"
-            )
-        if context_emb.size(1) > self.num_frames:
-            raise ValueError(
-                f"context length {context_emb.size(1)} exceeds predictor window "
-                f"{self.num_frames}"
             )
 
         goal = self.goal_proj(goal_emb)
-        pos_embedding = self.pos_embedding[:, : context_emb.size(1)].expand(
-            context_emb.size(0), -1, -1
-        )
-        x = torch.concat([context_emb, goal, pos_embedding], dim=-1)
+        x = torch.concat([current_emb, goal], dim=-1)
         return self.transformer(self.dropout_layer(x))
 
 
@@ -87,6 +77,6 @@ class HierarchicalWM(nn.Module):
             return self.base_model.encode({"pixels": batch["pixels"]})
 
     def forward(
-        self, context_emb: torch.Tensor, goal_emb: torch.Tensor
+        self, current_emb: torch.Tensor, goal_emb: torch.Tensor
     ) -> torch.Tensor:
-        return self.planner.forward(context_emb, goal_emb)
+        return self.planner.forward(current_emb, goal_emb)

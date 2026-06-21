@@ -39,15 +39,15 @@ class LearnedSubgoalSolver(swm.solver.CEMSolver):
     def solve(
         self, info_dict: dict[str, Any], init_action: torch.Tensor | None = None
     ) -> dict[str, Any]:
-        pixels = cast(torch.Tensor, info_dict["pixels"]).to(self.device)
+        pixels = cast(torch.Tensor, info_dict["pixels"]).to(self.device)[:, -1:]
         goal = cast(torch.Tensor, info_dict["goal"]).to(self.device)
         model = cast(EncodableWorldModel, self.model)
 
-        context_emb = model.encode({"pixels": pixels})["emb"]
+        current_emb = model.encode({"pixels": pixels})["emb"]
         goal_emb = model.encode({"pixels": goal})["emb"][:, -1:]
-        goal_emb = goal_emb.expand(-1, context_emb.size(1), -1)
-        subgoal_emb = self.planner(context_emb, goal_emb)[:, -1]
+        subgoal_emb = self.planner(current_emb, goal_emb)[:, -1]
 
         planned_info = dict(info_dict)
+        planned_info["pixels"] = pixels
         planned_info["goal_emb"] = subgoal_emb.unsqueeze(1)
         return super().solve(planned_info, init_action)
