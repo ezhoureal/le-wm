@@ -47,11 +47,6 @@ def run(cfg):
     ##       dataset       ##
     #########################
 
-    frame_indices = (
-        *range(cfg.history_size),
-        *range(cfg.subgoal_steps_ahead, cfg.subgoal_steps_ahead + cfg.history_size),
-        *range(cfg.goal_steps_ahead, cfg.goal_steps_ahead + cfg.history_size),
-    )
     dataset_path = Path(cfg.data.dataset.name)
     if not dataset_path.is_absolute():
         cache_dir = os.environ.get("LOCAL_DATASET_DIR")
@@ -63,7 +58,9 @@ def run(cfg):
     dataset = SparseLanceDataset(
         path=dataset_path,
         num_steps=cfg.data.dataset.num_steps,
-        frame_offsets=frame_indices,
+        history_size=cfg.history_size,
+        goal_steps_ahead=tuple(cfg.goal_steps_ahead),
+        subgoal_steps_ahead=cfg.subgoal_steps_ahead,
         keys_to_load=list(cfg.data.dataset.keys_to_load),
         transform=None,
     )
