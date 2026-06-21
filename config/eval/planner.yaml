@@ -1,0 +1,16 @@
+defaults:
+  - pusht
+  - override /solver: learned_subgoal
+  - _self_
+
+device: cuda
+policy: learned_subgoal
+planner_checkpoint: subgoal_pusht/weights_epoch_100.pt
+planner_cache_dir: null
+
+eval:
+  goal_offset_steps: 50
+
+output:
+  dir: outputs/planner_eval
+  filename: pusht_results.txt
