@@ -3,8 +3,6 @@ from typing import Any
 import torch
 from torch import nn
 
-from module import Transformer
-
 
 class SubgoalPlanner(nn.Module):
     def __init__(
@@ -14,35 +12,31 @@ class SubgoalPlanner(nn.Module):
         hidden_dim: int,
         output_dim: int,
         depth: int,
-        heads: int,
-        dim_head: int,
-        mlp_dim: int,
         dropout: float,
-        emb_dropout: float,
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.depth = depth
-        self.heads = heads
-        self.dim_head = dim_head
-        self.mlp_dim = mlp_dim
         self.dropout = dropout
-        self.emb_dropout = emb_dropout
 
-        self.dropout_layer = nn.Dropout(emb_dropout)
-        self.goal_proj = nn.Linear(input_dim, input_dim)
-        self.transformer = Transformer(
-            input_dim=2 * input_dim,
-            hidden_dim=hidden_dim,
-            output_dim=output_dim,
-            depth=depth,
-            heads=heads,
-            dim_head=dim_head,
-            mlp_dim=mlp_dim,
-            dropout=dropout,
+        layers: list[nn.Module] = []
+        layer_input_dim = 2 * input_dim
+        for _ in range(depth):
+            layers.extend(
+                [
+                    nn.LayerNorm(layer_input_dim),
+                    nn.Linear(layer_input_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                ]
+            )
+            layer_input_dim = hidden_dim
+        layers.extend(
+            [nn.LayerNorm(layer_input_dim), nn.Linear(layer_input_dim, output_dim)]
         )
+        self.mlp = nn.Sequential(*layers)
 
     def forward(
         self, current_emb: torch.Tensor, goal_emb: torch.Tensor
@@ -54,9 +48,7 @@ class SubgoalPlanner(nn.Module):
                 f"{tuple(goal_emb.shape)}"
             )
 
-        goal = self.goal_proj(goal_emb)
-        x = torch.concat([current_emb, goal], dim=-1)
-        return self.transformer(self.dropout_layer(x))
+        return self.mlp(torch.concat([current_emb, goal_emb], dim=-1))
 
 
 class HierarchicalWM(nn.Module):
