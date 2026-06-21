@@ -11,34 +11,30 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf
 
+from planner.sparse_lance_dataset import SparseLanceDataset
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
-
-
-def select_frames(batch: dict[str, Any], indices: tuple[int, ...]) -> dict[str, Any]:
-    batch["pixels"] = batch["pixels"][list(indices)]
-    return batch
 
 
 def model_forward(self, batch, stage, cfg):
     """Encode observations and train the subgoal predictor."""
-
-    ctx_len = cfg.history_size
-
     output = self.model.encode(batch)
-
-    emb = output["emb"]  # (B, T, D)
-    needed_frames = ctx_len + 2
+    # emb shape: (B, T, D).
+    # T is concatenation of three segments (each of length history_size):
+    # [context frames, subgoal frames, goal frames]
+    emb = output["emb"]
+    history_size = cfg.history_size
+    needed_frames = 3 * history_size
     if emb.size(1) != needed_frames:
         raise ValueError(
             f"subgoal training needs {needed_frames} sparse frames, got {emb.size(1)}"
         )
 
-    ctx_emb = emb[:, :ctx_len]
-    tgt_emb = emb[:, ctx_len]
-    goal_emb = emb[:, ctx_len + 1]
-    pred_emb = self.model(ctx_emb, goal_emb)
+    context_emb = emb[:, :history_size]
+    target_emb = emb[:, history_size : 2 * history_size]
+    goal_emb = emb[:, 2 * history_size :]
+    pred_emb = self.model(context_emb, goal_emb)
 
-    output["loss"] = output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
+    output["loss"] = output["pred_loss"] = (pred_emb - target_emb).pow(2).mean()
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=True, sync_dist=True)
@@ -51,23 +47,27 @@ def run(cfg):
     ##       dataset       ##
     #########################
 
-    dataset_cfg = cast(
-        dict[str, Any], OmegaConf.to_container(cfg.data.dataset, resolve=True)
-    )
-    dataset_name = dataset_cfg.pop("name")
-    cache_dir = os.environ.get("LOCAL_DATASET_DIR")
-    dataset_kwargs = {"transform": None, **dataset_cfg}
-    if cache_dir is not None:
-        dataset_kwargs["cache_dir"] = cache_dir
-    dataset = swm.data.load_dataset(dataset_name, **dataset_kwargs)
-    current_frame = cfg.history_size - 1
     frame_indices = (
         *range(cfg.history_size),
-        current_frame + cfg.subgoal_steps_ahead,
-        current_frame + cfg.goal_steps_ahead,
+        *range(cfg.subgoal_steps_ahead, cfg.subgoal_steps_ahead + cfg.history_size),
+        *range(cfg.goal_steps_ahead, cfg.goal_steps_ahead + cfg.history_size),
+    )
+    dataset_path = Path(cfg.data.dataset.name)
+    if not dataset_path.is_absolute():
+        cache_dir = os.environ.get("LOCAL_DATASET_DIR")
+        cache_root = Path(cache_dir) if cache_dir else None
+        dataset_path = (
+            swm.data.utils.get_cache_dir(cache_root, sub_folder="datasets")
+            / dataset_path
+        )
+    dataset = SparseLanceDataset(
+        path=dataset_path,
+        num_steps=cfg.data.dataset.num_steps,
+        frame_offsets=frame_indices,
+        keys_to_load=list(cfg.data.dataset.keys_to_load),
+        transform=None,
     )
     transforms: list[Any] = [
-        partial(select_frames, indices=frame_indices),
         get_img_preprocessor(source="pixels", target="pixels", img_size=cfg.img_size),
     ]
 
@@ -94,9 +94,10 @@ def run(cfg):
         for index, (episode_id, _) in enumerate(dataset.clip_indices)
         if episode_id not in train_episode_ids
     ]
+    torch_dataset = cast(torch.utils.data.Dataset[dict[str, Any]], dataset)
     train_set, val_set = (
-        torch.utils.data.Subset(dataset, train_indices),
-        torch.utils.data.Subset(dataset, val_indices),
+        torch.utils.data.Subset(torch_dataset, train_indices),
+        torch.utils.data.Subset(torch_dataset, val_indices),
     )
 
     train = torch.utils.data.DataLoader(
