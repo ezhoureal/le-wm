@@ -50,10 +50,10 @@ class SubgoalPlanner(nn.Module):
     def forward(
         self, context_emb: torch.Tensor, goal_emb: torch.Tensor
     ) -> torch.Tensor:
-        if context_emb.shape != goal_emb.shape:
+        if goal_emb.shape != context_emb[:, 0].shape:
             raise ValueError(
-                "context_emb and goal_emb must have matching shapes, got "
-                f"{tuple(context_emb.shape)} and {tuple(goal_emb.shape)}"
+                "goal embedding must have shape (batch, embedding), got "
+                f"{tuple(goal_emb.shape)}"
             )
         if context_emb.size(1) > self.num_frames:
             raise ValueError(
@@ -61,12 +61,12 @@ class SubgoalPlanner(nn.Module):
                 f"{self.num_frames}"
             )
 
-        goal = self.goal_proj(goal_emb)
+        goal = self.goal_proj(goal_emb).unsqueeze(1).expand_as(context_emb)
         pos_embedding = self.pos_embedding[:, : context_emb.size(1)].expand(
             context_emb.size(0), -1, -1
         )
         x = torch.concat([context_emb, goal, pos_embedding], dim=-1)
-        return self.transformer(self.dropout_layer(x))
+        return self.transformer(self.dropout_layer(x))[:, -1]
 
 
 class HierarchicalWM(nn.Module):

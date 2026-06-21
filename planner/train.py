@@ -14,27 +14,28 @@ from omegaconf import OmegaConf
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 
 
+def select_frames(batch: dict[str, Any], indices: tuple[int, ...]) -> dict[str, Any]:
+    batch["pixels"] = batch["pixels"][list(indices)]
+    return batch
+
+
 def model_forward(self, batch, stage, cfg):
     """Encode observations and train the subgoal predictor."""
 
     ctx_len = cfg.history_size
-    pred_frame = cfg.subgoal_steps_ahead
-    goal_frame = cfg.goal_steps_ahead
 
     output = self.model.encode(batch)
 
     emb = output["emb"]  # (B, T, D)
-    needed_frames = max(pred_frame, goal_frame) + ctx_len
-    if emb.size(1) < needed_frames:
+    needed_frames = ctx_len + 2
+    if emb.size(1) != needed_frames:
         raise ValueError(
-            f"subgoal training needs at least {needed_frames} frames, got "
-            f"{emb.size(1)}. Set data.dataset.num_steps >= "
-            "max(subgoal_steps_ahead, goal_steps_ahead) + history_size."
+            f"subgoal training needs {needed_frames} sparse frames, got {emb.size(1)}"
         )
 
     ctx_emb = emb[:, :ctx_len]
-    tgt_emb = emb[:, pred_frame : pred_frame + ctx_len]
-    goal_emb = emb[:, goal_frame : goal_frame + ctx_len]
+    tgt_emb = emb[:, ctx_len]
+    goal_emb = emb[:, ctx_len + 1]
     pred_emb = self.model(ctx_emb, goal_emb)
 
     output["loss"] = output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
@@ -59,8 +60,15 @@ def run(cfg):
     if cache_dir is not None:
         dataset_kwargs["cache_dir"] = cache_dir
     dataset = swm.data.load_dataset(dataset_name, **dataset_kwargs)
+    current_frame = cfg.history_size - 1
+    frame_indices = (
+        *range(cfg.history_size),
+        current_frame + cfg.subgoal_steps_ahead,
+        current_frame + cfg.goal_steps_ahead,
+    )
     transforms: list[Any] = [
-        get_img_preprocessor(source="pixels", target="pixels", img_size=cfg.img_size)
+        partial(select_frames, indices=frame_indices),
+        get_img_preprocessor(source="pixels", target="pixels", img_size=cfg.img_size),
     ]
 
     for col in cfg.data.dataset.keys_to_load:
@@ -73,8 +81,22 @@ def run(cfg):
     dataset.transform = transform
 
     rnd_gen = torch.Generator().manual_seed(cfg.seed)
-    train_set, val_set = spt.data.random_split(
-        dataset, lengths=[cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
+    episode_ids = torch.randperm(len(dataset.lengths), generator=rnd_gen)
+    num_train_episodes = int(len(episode_ids) * cfg.train_split)
+    train_episode_ids = set(episode_ids[:num_train_episodes].tolist())
+    train_indices = [
+        index
+        for index, (episode_id, _) in enumerate(dataset.clip_indices)
+        if episode_id in train_episode_ids
+    ]
+    val_indices = [
+        index
+        for index, (episode_id, _) in enumerate(dataset.clip_indices)
+        if episode_id not in train_episode_ids
+    ]
+    train_set, val_set = (
+        torch.utils.data.Subset(dataset, train_indices),
+        torch.utils.data.Subset(dataset, val_indices),
     )
 
     train = torch.utils.data.DataLoader(
