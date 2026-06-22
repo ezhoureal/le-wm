@@ -11,6 +11,7 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf
 
+from planner.hrm_subgoal_planner import HRMSubgoalPlanner
 from planner.sparse_lance_dataset import SparseLanceDataset
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 
@@ -27,12 +28,27 @@ def model_forward(self, batch, stage, cfg):
     current_emb = emb[:, :1]
     target_emb = emb[:, 1:2]
     goal_emb = emb[:, 2:]
-    pred_emb = self.model(current_emb, goal_emb)
-
-    output["loss"] = output["pred_loss"] = (pred_emb - target_emb).pow(2).mean()
+    if cfg.act.enabled:
+        planner = cast(HRMSubgoalPlanner, self.model.planner)
+        result = planner.training_forward(current_emb, goal_emb, target_emb)
+        output["pred_loss"] = result.prediction_loss
+        output["q_loss"] = result.q_loss
+        output["final_pred_loss"] = (result.prediction - target_emb).pow(2).mean()
+        output["correct"] = result.correct
+        output["reasoning_steps"] = result.steps
+        output["q_halt_accuracy"] = result.q_halt_accuracy
+        output["loss"] = result.prediction_loss + cfg.act.q_loss_weight * result.q_loss
+    else:
+        pred_emb = self.model(current_emb, goal_emb)
+        output["loss"] = output["pred_loss"] = (pred_emb - target_emb).pow(2).mean()
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
-    self.log_dict(losses_dict, on_step=True, sync_dist=True)
+    metrics_dict = {
+        f"{stage}/{key}": output[key].detach()
+        for key in ("correct", "reasoning_steps", "q_halt_accuracy")
+        if key in output
+    }
+    self.log_dict(losses_dict | metrics_dict, on_step=True, sync_dist=True)
     return output
 
 

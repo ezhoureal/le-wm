@@ -52,7 +52,7 @@ class SubgoalPlanner(nn.Module):
 
 
 class HierarchicalWM(nn.Module):
-    def __init__(self, base_model: Any, planner: SubgoalPlanner) -> None:
+    def __init__(self, base_model: Any, planner: nn.Module) -> None:
         super().__init__()
         self.base_model = base_model
         self.planner = planner

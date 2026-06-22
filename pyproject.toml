@@ -48,3 +48,4 @@ indent-width = 4
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

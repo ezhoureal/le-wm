@@ -21,3 +21,7 @@ subgoal_steps_ahead: 25
 num_preds: ${eval:'max(${goal_steps_ahead})'}
 seed: 3007
 train_split: 0.95
+
+act:
+  enabled: false
+  q_loss_weight: 0.5

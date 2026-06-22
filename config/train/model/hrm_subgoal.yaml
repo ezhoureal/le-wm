@@ -1,0 +1,60 @@
+_target_: planner.subgoal_planner.HierarchicalWM
+
+base_model:
+  _target_: stable_worldmodel.wm.lewm.LeWM
+  encoder:
+    _target_: stable_pretraining.backbone.utils.vit_hf
+    size: tiny
+    patch_size: 14
+    image_size: ${img_size}
+    pretrained: false
+    use_mask_token: false
+  predictor:
+    _target_: stable_worldmodel.wm.lewm.module.Predictor
+    num_frames: 3
+    input_dim: ${embed_dim}
+    hidden_dim: ${embed_dim}
+    output_dim: ${embed_dim}
+    depth: 6
+    heads: 16
+    mlp_dim: 2048
+    dim_head: 64
+    dropout: 0.1
+    emb_dropout: 0.0
+  action_encoder:
+    _target_: stable_worldmodel.wm.lewm.module.Embedder
+    input_dim: 10
+    emb_dim: ${embed_dim}
+  projector:
+    _target_: stable_worldmodel.wm.lewm.module.MLP
+    input_dim: ${embed_dim}
+    output_dim: ${embed_dim}
+    hidden_dim: 2048
+    norm_fn:
+      _target_: torch.nn.BatchNorm1d
+      _partial_: true
+  pred_proj:
+    _target_: stable_worldmodel.wm.lewm.module.MLP
+    input_dim: ${embed_dim}
+    output_dim: ${embed_dim}
+    hidden_dim: 2048
+    norm_fn:
+      _target_: torch.nn.BatchNorm1d
+      _partial_: true
+
+planner:
+  _target_: planner.hrm_subgoal_planner.HRMSubgoalPlanner
+  input_dim: ${embed_dim}
+  hidden_dim: 512
+  output_dim: ${embed_dim}
+  high_cycles: 2
+  low_cycles: 2
+  high_layers: 4
+  low_layers: 4
+  halt_max_steps: 4
+  halt_exploration_prob: 0.1
+  correctness_threshold: 0.08
+  num_heads: 8
+  expansion: 4.0
+  rms_norm_eps: 1e-5
+  rope_theta: 10000.0

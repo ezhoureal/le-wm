@@ -2,8 +2,7 @@ from typing import Any, Protocol, cast
 
 import stable_worldmodel as swm
 import torch
-
-from planner.subgoal_planner import SubgoalPlanner
+from torch import nn
 
 
 class EncodableWorldModel(Protocol):
@@ -14,7 +13,7 @@ class LearnedSubgoalSolver(swm.solver.CEMSolver):
     def __init__(
         self,
         model: Any,
-        planner: SubgoalPlanner,
+        planner: nn.Module,
         batch_size: int,
         num_samples: int,
         var_scale: float,
