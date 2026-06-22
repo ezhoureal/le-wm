@@ -4,7 +4,3 @@ defaults:
   - _self_
 
 output_model_name: hrm_subgoal_pusht
-
-act:
-  enabled: true
-  q_loss_weight: 0.5

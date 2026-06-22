@@ -1,26 +1,15 @@
 """HRM architecture adapted for continuous subgoal prediction.
 
-The recurrent hierarchy and ACT follow sapientinc/HRM's Apache-2.0
-implementation. Token embeddings and classification outputs are replaced with
-continuous latent projections for the planner task.
+The recurrent hierarchy follows sapientinc/HRM's Apache-2.0 implementation.
+Token embeddings and classification outputs are replaced with continuous latent
+projections for the planner task.
 """
 
 import math
-from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
 from torch import nn
-
-
-@dataclass
-class HRMTrainingOutput:
-    prediction: torch.Tensor
-    prediction_loss: torch.Tensor
-    q_loss: torch.Tensor
-    correct: torch.Tensor
-    steps: torch.Tensor
-    q_halt_accuracy: torch.Tensor
 
 
 def _truncated_normal_(tensor: torch.Tensor, std: float) -> torch.Tensor:
@@ -198,9 +187,7 @@ class HRMSubgoalPlanner(nn.Module):
         low_cycles: int,
         high_layers: int,
         low_layers: int,
-        halt_max_steps: int,
-        halt_exploration_prob: float,
-        correctness_threshold: float,
+        reasoning_steps: int,
         num_heads: int,
         expansion: float,
         rms_norm_eps: float,
@@ -217,27 +204,20 @@ class HRMSubgoalPlanner(nn.Module):
                 low_cycles,
                 high_layers,
                 low_layers,
-                halt_max_steps,
+                reasoning_steps,
             )
             < 1
         ):
-            raise ValueError("HRM cycles, layers, and halt steps must be positive")
-        if not 0 <= halt_exploration_prob <= 1:
-            raise ValueError("halt_exploration_prob must be between zero and one")
-        if correctness_threshold <= 0:
-            raise ValueError("correctness_threshold must be positive")
+            raise ValueError("HRM cycles, layers, and reasoning steps must be positive")
 
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.high_cycles = high_cycles
         self.low_cycles = low_cycles
-        self.halt_max_steps = halt_max_steps
-        self.halt_exploration_prob = halt_exploration_prob
-        self.correctness_threshold = correctness_threshold
+        self.reasoning_steps = reasoning_steps
 
         self.input_projection = nn.Linear(input_dim, hidden_dim)
         self.output_projection = nn.Linear(hidden_dim, output_dim)
-        self.q_head = nn.Linear(hidden_dim, 2)
         self.rotary_embedding = RotaryEmbedding(
             hidden_dim // num_heads, sequence_length=2, theta=rope_theta
         )
@@ -253,9 +233,6 @@ class HRMSubgoalPlanner(nn.Module):
         self.register_buffer(
             "low_init", _truncated_normal_(torch.empty(hidden_dim), std=1.0)
         )
-        with torch.no_grad():
-            self.q_head.weight.zero_()
-            self.q_head.bias.fill_(-5)
 
     def _reason(
         self,
@@ -313,158 +290,13 @@ class HRMSubgoalPlanner(nn.Module):
         input_embeddings = self._input_embeddings(current_emb, goal_emb)
         high_state, low_state = self._initial_states(input_embeddings)
         cos_sin = self.rotary_embedding()
-        batch_size = current_emb.size(0)
-        halted = torch.zeros(batch_size, dtype=torch.bool, device=current_emb.device)
-        final_prediction = input_embeddings.new_zeros(batch_size, 1, self.output_dim)
 
-        for step in range(1, self.halt_max_steps + 1):
+        for _ in range(self.reasoning_steps):
             high_state, low_state = self._reason(
                 high_state.detach(),
                 low_state.detach(),
                 input_embeddings,
                 cos_sin,
             )
-            prediction = self.output_projection(high_state[:, :1])
-            q_halt, q_continue = self.q_head(high_state[:, 0]).float().unbind(-1)
-            should_halt = q_halt > q_continue
-            if step == self.halt_max_steps:
-                should_halt = torch.ones_like(should_halt)
-            newly_halted = ~halted & should_halt
-            final_prediction = torch.where(
-                newly_halted.view(-1, 1, 1), prediction, final_prediction
-            )
-            halted = halted | should_halt
-            if halted.all():
-                break
 
-        return final_prediction
-
-    def training_forward(
-        self,
-        current_emb: torch.Tensor,
-        goal_emb: torch.Tensor,
-        target_emb: torch.Tensor,
-    ) -> HRMTrainingOutput:
-        input_embeddings = self._input_embeddings(current_emb, goal_emb)
-        expected_target_shape = (current_emb.size(0), 1, self.output_dim)
-        if target_emb.shape != expected_target_shape:
-            raise ValueError(
-                f"expected target embedding shape {expected_target_shape}, "
-                f"got {tuple(target_emb.shape)}"
-            )
-
-        high_state, low_state = self._initial_states(input_embeddings)
-        cos_sin = self.rotary_embedding()
-        batch_size = current_emb.size(0)
-        halted = torch.zeros(batch_size, dtype=torch.bool, device=current_emb.device)
-        final_prediction = input_embeddings.new_zeros(batch_size, 1, self.output_dim)
-        final_correct = torch.zeros(
-            batch_size, dtype=torch.bool, device=current_emb.device
-        )
-        final_q_halt = torch.zeros(batch_size, device=current_emb.device)
-        steps = torch.zeros(batch_size, dtype=torch.int32, device=current_emb.device)
-
-        minimum_steps = torch.zeros_like(steps)
-        explore = (
-            torch.rand(batch_size, device=current_emb.device)
-            < self.halt_exploration_prob
-        )
-        if self.halt_max_steps > 1:
-            random_steps = torch.randint(
-                2,
-                self.halt_max_steps + 1,
-                (batch_size,),
-                device=current_emb.device,
-                dtype=steps.dtype,
-            )
-            minimum_steps = torch.where(explore, random_steps, minimum_steps)
-
-        per_sample_losses: list[torch.Tensor] = []
-        q_halt_logits: list[torch.Tensor] = []
-        q_continue_logits: list[torch.Tensor] = []
-        active_masks: list[torch.Tensor] = []
-        correctness: list[torch.Tensor] = []
-
-        for step in range(1, self.halt_max_steps + 1):
-            high_state, low_state = self._reason(
-                high_state.detach(),
-                low_state.detach(),
-                input_embeddings,
-                cos_sin,
-            )
-            prediction = self.output_projection(high_state[:, :1])
-            sample_loss = (prediction.float() - target_emb.float()).pow(2).mean((1, 2))
-            is_correct = sample_loss < self.correctness_threshold
-            q_halt, q_continue = self.q_head(high_state[:, 0]).float().unbind(-1)
-            active = ~halted
-
-            per_sample_losses.append(sample_loss)
-            q_halt_logits.append(q_halt)
-            q_continue_logits.append(q_continue)
-            active_masks.append(active)
-            correctness.append(is_correct)
-
-            should_halt = (q_halt > q_continue) & (step >= minimum_steps)
-            if step == self.halt_max_steps:
-                should_halt = torch.ones_like(should_halt)
-            newly_halted = active & should_halt
-            final_prediction = torch.where(
-                newly_halted.view(-1, 1, 1), prediction, final_prediction
-            )
-            final_correct = torch.where(newly_halted, is_correct, final_correct)
-            final_q_halt = torch.where(newly_halted, q_halt, final_q_halt)
-            steps = torch.where(newly_halted, step, steps)
-            halted = halted | should_halt
-
-        prediction_loss = torch.cat(
-            [
-                loss[mask]
-                for loss, mask in zip(per_sample_losses, active_masks, strict=True)
-            ]
-        ).mean()
-        halt_loss = F.binary_cross_entropy_with_logits(
-            torch.cat(
-                [
-                    logits[mask]
-                    for logits, mask in zip(q_halt_logits, active_masks, strict=True)
-                ]
-            ),
-            torch.cat(
-                [
-                    correct[mask].float()
-                    for correct, mask in zip(correctness, active_masks, strict=True)
-                ]
-            ),
-        )
-        continue_loss = q_continue_logits[0].new_zeros(())
-        if self.halt_max_steps > 1:
-            continue_logits = torch.cat(
-                [
-                    q_continue_logits[index][active_masks[index]]
-                    for index in range(self.halt_max_steps - 1)
-                ]
-            )
-            with torch.no_grad():
-                continue_targets = torch.cat(
-                    [
-                        torch.sigmoid(
-                            torch.maximum(
-                                q_halt_logits[index + 1],
-                                q_continue_logits[index + 1],
-                            )
-                        )[active_masks[index]]
-                        for index in range(self.halt_max_steps - 1)
-                    ]
-                )
-            continue_loss = F.binary_cross_entropy_with_logits(
-                continue_logits, continue_targets
-            )
-
-        return HRMTrainingOutput(
-            prediction=final_prediction,
-            prediction_loss=prediction_loss,
-            q_loss=halt_loss + continue_loss,
-            correct=final_correct.float().mean(),
-            steps=steps.float().mean(),
-            q_halt_accuracy=((final_q_halt >= 0) == final_correct).float().mean(),
-        )
+        return self.output_projection(high_state[:, :1])
