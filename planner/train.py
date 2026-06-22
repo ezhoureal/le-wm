@@ -35,7 +35,7 @@ def model_forward(self, batch, stage, cfg):
     return output
 
 
-@hydra.main(version_base=None, config_path="../config/train", config_name="subgoal")
+@hydra.main(version_base=None, config_path="../config/train", config_name="hrm_subgoal")
 def run(cfg):
     #########################
     ##       dataset       ##
